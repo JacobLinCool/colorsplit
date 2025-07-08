@@ -17,12 +17,13 @@
 		pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 	});
 
-	// Color detection function
+	// Improved color detection function with luminance-aware processing
 	function detectColor(imageData: ImageData, threshold: number): boolean {
 		const data = imageData.data;
 		let colorPixels = 0;
-		let totalPixels = data.length / 4;
 		let sampledPixels = 0;
+		let brightPixels = 0;
+		let darkPixels = 0;
 
 		// Sample every 10th pixel for performance
 		for (let i = 0; i < data.length; i += 40) {
@@ -37,13 +38,39 @@
 
 			sampledPixels++;
 
+			// Calculate luminance using standard perceptual weights
+			const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+			
+			// Track brightness distribution for adaptive processing
+			if (luminance > 200) brightPixels++;
+			else if (luminance < 55) darkPixels++;
+
 			// Check if pixel has significant color variation
 			const max = Math.max(r, g, b);
 			const min = Math.min(r, g, b);
 			const saturation = max === 0 ? 0 : (max - min) / max;
 
-			// Consider pixel colored if saturation is above threshold
-			if (saturation * 100 > threshold) {
+			// Calculate chroma (absolute color intensity)
+			const chroma = max - min;
+			
+			// Adaptive color detection based on luminance conditions
+			let isColorPixel = false;
+			
+			if (luminance < 55) {
+				// Low light conditions: be more sensitive to any color variation
+				// Use lower threshold and consider both saturation and chroma
+				isColorPixel = (saturation * 100 > threshold * 0.7) || (chroma > 8);
+			} else if (luminance > 200) {
+				// Bright conditions: be more strict but consider subtle colors
+				// Bright areas might wash out colors, so check both metrics
+				isColorPixel = (saturation * 100 > threshold * 0.8) || (chroma > 10);
+			} else {
+				// Normal conditions: use standard saturation with chroma backup
+				isColorPixel = (saturation * 100 > threshold) || 
+							  (chroma > 12 && saturation > 0.1);
+			}
+
+			if (isColorPixel) {
 				colorPixels++;
 			}
 		}
@@ -51,7 +78,19 @@
 		if (sampledPixels === 0) return false;
 
 		const colorPercentage = (colorPixels / sampledPixels) * 100;
-		return colorPercentage > 0.01; // Consider page colored if >0.01% of sampled pixels are colored
+		const brightRatio = brightPixels / sampledPixels;
+		const darkRatio = darkPixels / sampledPixels;
+		
+		// Adaptive final threshold based on lighting conditions
+		let finalThreshold = 0.01; // Base threshold
+		
+		// In very bright or very dark images, lower the threshold
+		// as color detection becomes more challenging
+		if (brightRatio > 0.3 || darkRatio > 0.3) {
+			finalThreshold = 0.005; // More sensitive in challenging lighting
+		}
+		
+		return colorPercentage > finalThreshold;
 	}
 
 	// Process PDFs
